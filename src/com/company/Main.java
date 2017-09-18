@@ -7,13 +7,16 @@ import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.util.*;
-import java.util.stream.Stream;
 
 public class Main {
+    private static final int BATCH_SIZE = 2048; // bytes to keep in memo 2MB?
     public static HashMap<Character, Integer> letterCount = new HashMap<>();
     public static List<Pair<Character, Integer>> listSortedCount = new ArrayList<>();
-    public static HashMap<Byte, Character> encodingMap = new HashMap<>();
-    public static HashMap<Character, Byte> charToEncodingMap = new HashMap<>();
+
+    public static HashMap<Character, String> encodeMap = new HashMap<>();
+    public static HashMap<String, Character> decodeMap = new HashMap<>();
+
+    public static List<HuffmanTreeNode> leafNodes = new ArrayList<>();
     public static HuffmanTreeNode huffmanTree;
 
 
@@ -21,6 +24,8 @@ public class Main {
 
         readFileFillHashMap();
         buildHuffTree();
+        walkTreePopulateAddress(huffmanTree, "");
+        createMaps(huffmanTree);
 
         TreePrinter.printNode(huffmanTree);
 
@@ -28,38 +33,101 @@ public class Main {
         decodeFileTo("encoded", "decoded");
     }
 
+    private static void walkTreePopulateAddress(HuffmanTreeNode node, String address) {
+        if (node == null) return;
+        node.setAddress(address);
+        walkTreePopulateAddress(node.getLeft(), address + "0");
+        walkTreePopulateAddress(node.getRight(), address + "1");
+    }
+
     private static void decodeFileTo(String encoded, String decoded) {
-        try (FileOutputStream fos = new FileOutputStream(decoded); FileInputStream fin = new FileInputStream(encoded)) {
-            byte b;
-            byte temp = 0x1;
-            while ((b = (byte) fin.read()) != -1) {
-                if (!encodingMap.containsKey(b & temp)) {
-                    temp = ((byte) (b << 1));
-                    continue;
+        String bytes = getBytes(encoded);
+        writeDecodedBytesToFile(bytes, decoded);
+    }
+
+    private static void writeDecodedBytesToFile(String bytes, String decoded) {
+        try (FileOutputStream fos = new FileOutputStream(decoded)) {
+            String key = "";
+            String message = "";
+            for (int i = 0; i < bytes.length(); i++) {
+                key += bytes.charAt(i);
+                if (decodeMap.containsKey(key)) {
+                    message += decodeMap.get(key);
+                    key = "";
                 }
-                fos.write(b);
+
+                if (message.length() > BATCH_SIZE) { //batch
+                    fos.write(message.getBytes());
+                    fos.flush();
+                    message = "";
+                }
             }
+            fos.write(message.getBytes());
+            fos.flush();
         } catch (Exception e) {
             e.printStackTrace();
         }
     }
 
+    private static String getBytes(String encoded) {
+        String bytes = "";
+
+        try (FileInputStream fin = new FileInputStream(encoded)) {
+            int c = fin.read();
+            while (c != -1) {
+                bytes += String.format("%7s", Integer.toBinaryString(c)).replace(' ', '0').substring(0);
+                c = fin.read();
+            }
+        } catch (FileNotFoundException e) {
+
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return bytes;
+    }
+
     private static void encodeFileTo(String input, String output) {
-        try (FileOutputStream fos = new FileOutputStream(output); FileInputStream fin = new FileInputStream(input)) {
-            int c;
-            String binaryRepresentation = "";
-            while ((c = (char) fin.read()) != -1) {
-                if (!charToEncodingMap.containsKey((char) c)) {
+        String binary = binaryRepresentationFromFile(input);
+        writeBinaryStringtoFile(binary, output);
+    }
+
+    private static String binaryRepresentationFromFile(String input) {
+        String binaryRepresentation = "";
+        try (FileInputStream fin = new FileInputStream(input)) {
+            int c = fin.read();
+            while (c != -1) {
+                if (!encodeMap.containsKey((char) c)) {
                     System.out.println((char) c + "Key not found!");
                     break;
                 }
-                binaryRepresentation += Integer.toBinaryString(charToEncodingMap.get((char) c));
-                fos.write(charToEncodingMap.get((char) c));
+                binaryRepresentation += encodeMap.get((char) c);
+                c = fin.read();
             }
+
             System.out.println(binaryRepresentation);
             System.out.println(decompressString(binaryRepresentation));
 
         } catch (Exception e) {
+            e.printStackTrace();
+        }
+        return binaryRepresentation;
+    }
+
+    private static void writeBinaryStringtoFile(String binary, String output) {
+
+        //convert to binary
+        try (FileOutputStream fos = new FileOutputStream(output)) {
+            List<String> byteChunks = Arrays.asList(binary.split("(?<=\\G.{7})"));
+
+            for (String byteChunk : byteChunks) {
+                Byte encodedByte = Byte.parseByte(byteChunk, 2);
+                fos.write(encodedByte);
+                //TODO: add batching here! :)
+            }
+
+        } catch (FileNotFoundException e) {
+            e.printStackTrace();
+        } catch (IOException e) {
             e.printStackTrace();
         }
     }
@@ -68,9 +136,11 @@ public class Main {
 
         PriorityQueue<HuffmanTreeNode> queue = new PriorityQueue<>(Comparator.comparing(HuffmanTreeNode::getCount));
         listSortedCount.forEach(pair -> {
-            queue.add(new HuffmanTreeNode(true, pair.getKey(), null, null, pair.getValue()));
+            HuffmanTreeNode node = new HuffmanTreeNode(true, pair.getKey(), null, null, pair.getValue());
+            leafNodes.add(node); // this is to keep track of the leaf nodes
+            queue.add(node);
         });
-        for (; ;) {
+        for (; ; ) {
             if (queue.size() < 2) break;
             HuffmanTreeNode left = queue.poll();
             left.setEncoding((byte) 0x0);
@@ -79,41 +149,27 @@ public class Main {
             queue.add(new HuffmanTreeNode(false, null, right, left, right.getCount() + left.getCount()));
         }
         huffmanTree = queue.peek();
-        printEncoding((byte)0, queue.peek());
-        System.out.println(encodingMap);
 
     }
 
-    private static void printEncoding(Byte encoding, HuffmanTreeNode node) {
-        if (encoding == null) {
-            encoding = node.getEncoding();
-        }
-        if (node.isLeaf()) {
-            encodingMap.put(encoding, node.getCharacter());
-            charToEncodingMap.put(node.getCharacter(), encoding);
-            System.out.println(Integer.toBinaryString(encoding) + node.getCharacter());
-            return;
-        }
-
-        printEncoding((byte) (encoding << 1), node.getLeft());
-        printEncoding((byte) ((encoding << 1) | 0x1), node.getRight());
+    private static void createMaps(HuffmanTreeNode node) {
+        leafNodes.forEach(leaf -> {
+            decodeMap.put(leaf.getAddress(), leaf.getCharacter());
+            encodeMap.put(leaf.getCharacter(), leaf.getAddress());
+        });
 
     }
 
     private static String decompressString(String s) {
         String message = "";
-        Byte incoming;
-        Byte key = 0;
+        String key = "";
         for (int i = 0; i < s.length(); i++) {
-            incoming = s.charAt(i) == '0' ? (byte)0 : (byte)1;
-            key =(byte)(key | incoming);
-
-            if (encodingMap.containsKey(key)) {
-                message += encodingMap.get(key);
-                key = 0;
+            key += Character.toString((char) s.charAt(i));
+            if (decodeMap.containsKey(key)) {
+                message += decodeMap.get(key);
+                key = "";
                 continue;
             }
-            key = (byte)(key << 1);
         }
         return message;
     }
@@ -141,7 +197,9 @@ public class Main {
 class HuffmanTreeNode {
 
     private boolean leaf;
+
     private Character character;
+    private String address = "";
 
     private HuffmanTreeNode right;
     private HuffmanTreeNode left;
@@ -153,6 +211,10 @@ class HuffmanTreeNode {
     public boolean isLeaf() {
         return leaf;
 
+    }
+
+    public String getAddress() {
+        return address;
     }
 
     public byte getEncoding() {
@@ -169,6 +231,10 @@ class HuffmanTreeNode {
 
     public HuffmanTreeNode getLeft() {
         return left;
+    }
+
+    public void setAddress(String s) {
+        address = s;
     }
 
     private Integer count;
